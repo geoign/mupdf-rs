@@ -393,8 +393,8 @@ typedef struct
 	int skip;
 	int pad;
 	int scale;
-	int src_stride;
-	int dst_stride;
+	size_t src_stride;
+	size_t dst_stride;
 	fz_unpack_line_fn unpack;
 	unsigned char buf[1];
 } unpack_state;
@@ -434,14 +434,58 @@ unpack_drop(fz_context *ctx, void *state)
 	fz_free(ctx, state);
 }
 
+/* Backport for MuPDF 1.27.2 of upstream commits a26f0142, ed461a8e and
+ * a08c5ee1 (Bug 708990, CVE-2026-3308): the strides of an unpacked image
+ * row could overflow an int and give a heap buffer that is too small. The
+ * checked arithmetic of later MuPDF (fz_ckd_*) is written out here. */
+static int
+unpack_ckd_mul_u64(uint64_t *r, uint64_t a, uint64_t b)
+{
+	if (b != 0 && a > UINT64_MAX / b)
+		return 1;
+	*r = a * b;
+	return 0;
+}
+
+static int
+unpack_ckd_add_u64(uint64_t *r, uint64_t a, uint64_t b)
+{
+	if (a > UINT64_MAX - b)
+		return 1;
+	*r = a + b;
+	return 0;
+}
+
 fz_stream *
 fz_unpack_stream(fz_context *ctx, fz_stream *src, int depth, int w, int h, int n, int indexed, int pad, int skip)
 {
-	int src_stride = (w*depth*n+7)>>3;
-	int dst_stride;
+	uint64_t u64;
+	size_t src_stride, dst_stride;
 	unpack_state *state;
 	fz_unpack_line_fn unpack_line = NULL;
 	int scale = 1;
+
+	if (n < 1 || n > FZ_MAX_COLORS)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "n out of range in fz_unpack_stream");
+	if (depth < 1 || depth > 32)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "depth out of range in fz_unpack_stream");
+	if (w < 0)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "width cannot be negative");
+	if (h < 0)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "height cannot be negative");
+	if (pad < 0 || pad > 1)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "pad can either be 0 or 1");
+	if (skip < 0)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "skip cannot be negative");
+
+	if (unpack_ckd_mul_u64(&u64, depth, n) ||
+		unpack_ckd_mul_u64(&u64, u64, w) ||
+		unpack_ckd_add_u64(&u64, u64, 7))
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "area out of range in fz_unpack_stream");
+	u64 >>= 3;
+	if (u64 > SIZE_MAX)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "area out of range in fz_unpack_stream");
+	src_stride = (size_t)u64;
 
 	if (depth == 1)
 		init_get1_tables();
@@ -454,7 +498,9 @@ fz_unpack_stream(fz_context *ctx, fz_stream *src, int depth, int w, int h, int n
 		case 4: scale = 17; break;
 		}
 
-	dst_stride = w * (n + !!pad);
+	if (unpack_ckd_mul_u64(&u64, (uint64_t)n + !!pad, w) || u64 > SIZE_MAX)
+		fz_throw(ctx, FZ_ERROR_ARGUMENT, "dst_stride out of range in fz_unpack_stream");
+	dst_stride = (size_t)u64;
 
 	if (n == 1 && depth == 1 && scale == 1 && !pad && !skip)
 		unpack_line = fz_unpack_mono_line_unscaled;

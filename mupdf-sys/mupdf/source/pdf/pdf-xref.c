@@ -4074,6 +4074,8 @@ free_char_list(fz_context *ctx, char_list *c)
 	for (i = c->len-1; i >= 0; i--)
 		fz_free(ctx, c->list[i]);
 	fz_free(ctx, c->list);
+	/* Bug 709768 (CVE-2026-112036), upstream 3984925b: avoid a double free. */
+	c->list = NULL;
 	c->len = 0;
 	c->max = 0;
 }

@@ -28,6 +28,26 @@
 static fz_image *pdf_load_jpx_as_compressed_image(fz_context *ctx, pdf_document *doc, pdf_obj *dict);
 static fz_image *pdf_load_jpx_as_compressed_image_mask(fz_context *ctx, pdf_document *doc, pdf_obj *dict);
 
+/* Checked arithmetic of later MuPDF (fz_ckd_*), for the image size checks
+ * backported from upstream a08c5ee1 (Bug 708990, CVE-2026-3308). */
+static int
+image_ckd_mul_size(size_t *r, size_t a, size_t b)
+{
+	if (b != 0 && a > SIZE_MAX / b)
+		return 1;
+	*r = a * b;
+	return 0;
+}
+
+static int
+image_ckd_add_size(size_t *r, size_t a, size_t b)
+{
+	if (a > SIZE_MAX - b)
+		return 1;
+	*r = a + b;
+	return 0;
+}
+
 static fz_image *
 pdf_load_image_imp(fz_context *ctx, pdf_document *doc, pdf_resource_stack *rdb, pdf_obj *dict, fz_stream *cstm, int forcemask)
 {
@@ -45,6 +65,7 @@ pdf_load_image_imp(fz_context *ctx, pdf_document *doc, pdf_resource_stack *rdb, 
 	int colorkey[FZ_MAX_COLORS * 2];
 	int stride;
 	pdf_obj *intent;
+	size_t z;
 
 	int i;
 	fz_compressed_buffer *buffer;
@@ -82,9 +103,9 @@ pdf_load_image_imp(fz_context *ctx, pdf_document *doc, pdf_resource_stack *rdb, 
 		fz_throw(ctx, FZ_ERROR_SYNTAX, "image depth is zero (or less)");
 	if (bpc > 16)
 		fz_throw(ctx, FZ_ERROR_SYNTAX, "image depth is too large: %d", bpc);
-	if (SIZE_MAX / w < (size_t)(bpc+7)/8)
-		fz_throw(ctx, FZ_ERROR_SYNTAX, "image is too large");
-	if (SIZE_MAX / h < w * (size_t)((bpc+7)/8))
+	if (image_ckd_add_size(&z, bpc, 7) ||
+		image_ckd_mul_size(&z, z/8, w) ||
+		image_ckd_mul_size(&z, z, h))
 		fz_throw(ctx, FZ_ERROR_SYNTAX, "image is too large");
 
 	fz_var(mask);
@@ -114,7 +135,10 @@ pdf_load_image_imp(fz_context *ctx, pdf_document *doc, pdf_resource_stack *rdb, 
 			n = 1;
 		}
 
-		if (SIZE_MAX / n < h * ((size_t)w) * ((bpc+7)/8))
+		if (image_ckd_add_size(&z, bpc, 7) ||
+			image_ckd_mul_size(&z, z/8, w) ||
+			image_ckd_mul_size(&z, z, h) ||
+			image_ckd_mul_size(&z, z, n))
 			fz_throw(ctx, FZ_ERROR_SYNTAX, "image is too large");
 
 		obj = pdf_dict_geta(ctx, dict, PDF_NAME(Decode), PDF_NAME(D));
