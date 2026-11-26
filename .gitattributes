@@ -1,0 +1,2 @@
+# MuPDF sources are kept byte for byte as packaged in mupdf-sys 0.8.0.
+mupdf-sys/mupdf/** -text
